@@ -1,5 +1,7 @@
 # GET: General Expression Transformer
 
+## The Manifolds edit!
+
 A foundation model of transcription across human cell types.
 
 This repository contains the official implementation of the model described in our paper: https://www.nature.com/articles/s41586-024-08391-z.
