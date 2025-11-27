@@ -38,7 +38,6 @@ test/abc
 *tsv
 experiments
 tutorials/*.zarr
-tutorials/*.yaml
 tutorials/*.csv
 tutorials/*.bed
 tutorials/*.gz
