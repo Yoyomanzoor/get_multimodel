@@ -1821,161 +1821,236 @@ class GETNucleotideRegionFinetuneExpHiCABC(BaseGETModel):
             'distance_map': torch.randn(B, R, R).float(),
         }
 
+# --- Diffusion Configuration ---
 @dataclass
 class DiffusionConfig(BaseConfig):
     num_timesteps: int = 1000
     beta_start: float = 0.0001
-    beta_end: int = 256
+    beta_end: float = 0.02
+    hidden_dim: int = 256
 
+
+# --- Diffusion Head (Denoising Network) ---
 class DiffusionHead(nn.Module):
     def __init__(self, cfg: DiffusionConfig, input_dim: int, condition_dim: int):
         super().__init__()
         self.cfg = cfg
-
+        
         # Time embedding
-        self.time_embed = nn.Sequential(
-            nn.Linear(1, cfg.hidden_dim),
-            nn.GELU(),
-            nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
+        self.time_embed_dim = cfg.hidden_dim
+        self.time_mlp = nn.Sequential(
+            nn.Linear(1, self.time_embed_dim),
+            nn.SiLU(),
+            nn.Linear(self.time_embed_dim, self.time_embed_dim),
         )
+        
+        # Project condition (Transformer output) to hidden dim
+        self.cond_proj = nn.Linear(condition_dim, cfg.hidden_dim)
 
-        # The Denoising Network (MLP)
-        # Inputs: Noisy Data + Time Embedding + Context (Encodings)
+        # Denoising MLP: Inputs [Noisy_Data + Time_Emb + Condition]
+        in_dim = input_dim + self.time_embed_dim + cfg.hidden_dim
+        
         self.net = nn.Sequential(
-            nn.Linear(input_dim + cfg.hidden_dim + condition_dim, cfg.hidden_dim),
+            nn.Linear(in_dim, cfg.hidden_dim),
             nn.LayerNorm(cfg.hidden_dim),
-            nn.GELU(),
+            nn.SiLU(),
             nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
             nn.LayerNorm(cfg.hidden_dim),
-            nn.GELU(),
-            nn.Linear(cfg.hidden_dim, input_dim) # Predicts the noise
+            nn.SiLU(),
+            nn.Linear(cfg.hidden_dim, input_dim)  # Output: Predicted Noise
         )
 
-    def forward(self, x, t, context):
-        # x: Noisy target (e.g. Expression), shape (B, OutputDim)
-        # t: Timestep, shape (B, 1)
-        # context: Encodings from transformer, shape (B, EmbedDim)
-
-        t_emb = self.time_embed(t.float())
-        # Concatenate noisy input, time, and condition
-        inp = torch.cat([x, t_emb, context], dim=-1)
-
+    def forward(self, x, t, condition):
+        # x: (B, N, input_dim) - Noisy target
+        # t: (B, 1) - Timestep
+        # condition: (B, N, embed_dim) - Encodings from transformer
+        
+        t_emb = self.time_mlp(t.float())  # (B, hidden_dim)
+        c_emb = self.cond_proj(condition)  # (B, N, hidden_dim)
+        
+        # Expand t_emb to match sequence dimension
+        t_emb = t_emb.unsqueeze(1).expand(-1, x.size(1), -1)  # (B, N, hidden_dim)
+        
+        # Concatenate: [x, t_emb, c_emb]
+        inp = torch.cat([x, t_emb, c_emb], dim=-1)
         return self.net(inp)
 
-@dataclass
-class GETDiffusionModelConfig(BaseGETModelConfig):
-    # Existing architectural configs
-    motif_scanner: MotifScannerConfig = field(default_factory=MotifScannerConfig)
-    atac_attention: ATACSplitPoolConfig = field(default_factory=ATACSplitPoolConfig)
-    region_embed: RegionEmbedConfig = field(default_factory=RegionEmbedConfig)
-    encoder: EncoderConfig = field(default_factory=EncoderConfig)
-    
-    # New Diffusion config
-    diffusion: DiffusionConfig = field(default_factory=DiffusionConfig)
-    output_dim: int = 1 # Dimension of target (e.g., 1 for scalar expression)
 
+# --- GETRegionDiffusion Model Config ---
+@dataclass
+class GETRegionDiffusionModelConfig(GETRegionPretrainModelConfig):
+    """Config for GETRegionDiffusion - extends GETRegionPretrain with diffusion."""
+    diffusion: DiffusionConfig = field(default_factory=DiffusionConfig)
+
+
+# --- GETRegionDiffusion Model (follows GETRegionPretrain pattern) ---
 class GETDiffusionModel(BaseGETModel):
-    def __init__(self, cfg: GETDiffusionModelConfig):
+    """
+    Diffusion-based pretraining model that follows the GETRegionPretrain pattern.
+    Uses pre-computed region_motif as input (no motif_scanner or atac_attention).
+    """
+    def __init__(self, cfg: GETRegionDiffusionModelConfig):
         super().__init__(cfg)
         
-        # --- 1. Preserve Architecture ---
-        self.motif_scanner = MotifScanner(cfg.motif_scanner)
-        self.atac_attention = ATACSplitPool(cfg.atac_attention)
+        # 1. Initialize Components (matching GETRegionPretrain)
         self.region_embed = RegionEmbed(cfg.region_embed)
         self.encoder = GETTransformer(**cfg.encoder)
+        self.head_mask = nn.Linear(**cfg.head_mask)
+        self.mask_token = nn.Parameter(
+            torch.zeros(1, 1, cfg.mask_token.embed_dim))
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, cfg.embed_dim))
+        trunc_normal_(self.mask_token, std=cfg.mask_token.std)
         
-        # --- 2. Add Diffusion Components ---
+        # 2. Initialize Diffusion Head
         self.diffusion_head = DiffusionHead(
             cfg.diffusion, 
-            input_dim=cfg.output_dim, 
+            input_dim=cfg.head_mask.out_features,  # Same as output_dim (num_motif)
             condition_dim=cfg.encoder.embed_dim
         )
         
-        # Register diffusion buffers (betas, alphas)
-        self.register_diffusion_schedule(cfg.diffusion)
+        # 3. Setup Noise Schedule (Buffers for DDPM)
+        self.setup_diffusion_schedule(cfg.diffusion)
+        
+        self.apply(self._init_weights)
 
-    def register_diffusion_schedule(self, cfg):
+    def setup_diffusion_schedule(self, cfg):
+        """Pre-compute diffusion parameters."""
         betas = torch.linspace(cfg.beta_start, cfg.beta_end, cfg.num_timesteps)
         alphas = 1.0 - betas
         alphas_cumprod = torch.cumprod(alphas, dim=0)
         
+        # Register as buffers so they move to GPU automatically
+        self.register_buffer('betas', betas)
         self.register_buffer('sqrt_alphas_cumprod', torch.sqrt(alphas_cumprod))
         self.register_buffer('sqrt_one_minus_alphas_cumprod', torch.sqrt(1.0 - alphas_cumprod))
-        self.num_timesteps = cfg.num_timesteps
+        self.register_buffer('alphas', alphas)
+        self.register_buffer('alphas_cumprod', alphas_cumprod)
 
-    def forward(self, batch):
-        # --- 1. Get Encodings (Condition) ---
-        # This matches the flow in your other models
-        x = self.motif_scanner(batch['sample_peak_sequence'], batch['motif_mean_std'])
-        x = self.atac_attention(x, batch['sample_track'], batch['chunk_size'], 
-                                batch['n_peaks'], batch['max_n_peaks'])
-        x = self.region_embed(x)
+    def get_input(self, batch):
+        return {
+            'region_motif': batch['region_motif'],
+            'mask': batch['mask'].unsqueeze(-1).bool()
+        }
+
+    def forward(self, region_motif, mask):
+        """
+        Training Step using diffusion on masked regions.
         
-        # Encoder output (Latent representation)
-        # Using the CLS token or pooling, depending on your transformer setup
-        encodings, _ = self.encoder(x, mask=batch['padding_mask'])
+        Args:
+            region_motif: (B, N, M) - Pre-computed region motif features
+            mask: (B, N, 1) - Boolean mask indicating which regions to denoise
+        """
+        # 1. Encode the input
+        x = self.region_embed(region_motif)
+        B, N, C = x.shape
         
-        # Assuming we want the representation of the first token (CLS) or average
-        context = encodings[:, 0, :] 
+        # Add CLS token
+        cls_tokens = self.cls_token.expand(B, -1, -1)
         
-        # --- 2. Diffusion Training Step ---
-        # We need the ground truth to add noise to it
-        target = batch['exp_label'] # Shape (B, OutputDim)
+        # Apply mask token to masked positions (like GETRegionPretrain)
+        mask_token = self.mask_token.expand(B, N, -1)
+        w = mask.type_as(mask_token)
+        x = x * (1 - w) + mask_token * w
         
-        # Sample time t
-        B = target.shape[0]
-        t = torch.randint(0, self.num_timesteps, (B, 1), device=target.device)
+        # Concatenate CLS and encode
+        x = torch.cat((cls_tokens, x), dim=1)
+        encodings, _ = self.encoder(x)
         
-        # Add noise
+        # Remove CLS token for diffusion
+        encodings = encodings[:, 1:]  # (B, N, C)
+        
+        # 2. Diffusion on the original region_motif (target)
+        target = region_motif  # (B, N, M) - Original motif values
+        device = target.device
+        
+        # Sample random timestep t
+        t = torch.randint(0, self.cfg.diffusion.num_timesteps, (B, 1), device=device)
+        
+        # Sample noise epsilon
         noise = torch.randn_like(target)
-        # Get noisy target at time t: q(x_t | x_0)
-        sqrt_alpha = self.sqrt_alphas_cumprod[t]
-        sqrt_one_minus_alpha = self.sqrt_one_minus_alphas_cumprod[t]
+        
+        # Add noise: q(x_t | x_0)
+        sqrt_alpha = self.sqrt_alphas_cumprod[t].unsqueeze(-1)  # (B, 1, 1)
+        sqrt_one_minus_alpha = self.sqrt_one_minus_alphas_cumprod[t].unsqueeze(-1)
         
         noisy_target = sqrt_alpha * target + sqrt_one_minus_alpha * noise
         
-        # Predict noise
-        predicted_noise = self.diffusion_head(noisy_target, t, context)
+        # 3. Predict noise using diffusion head
+        predicted_noise = self.diffusion_head(noisy_target, t, encodings)
         
-        return predicted_noise, noise
+        # 4. Also compute head_mask output for compatibility with pretrain metrics
+        x_masked = self.head_mask(encodings)
+        
+        return predicted_noise, noise, x_masked, region_motif, mask
 
     def before_loss(self, output, batch):
-        # Output is (predicted_noise, true_noise)
-        pred_noise, true_noise = output
-        return {'noise': pred_noise}, {'noise': true_noise}
+        """Prepare outputs for loss computation."""
+        predicted_noise, true_noise, x_masked, x_original, loss_mask = output
+        B, N, C = x_original.shape
         
-    def predict_zero_shot(self, batch):
-        """Generation loop for inference"""
-        with torch.no_grad():
-            # 1. Get Encodings
-            x = self.motif_scanner(batch['sample_peak_sequence'], batch['motif_mean_std'])
-            x = self.atac_attention(x, batch['sample_track'], batch['chunk_size'], 
-                                    batch['n_peaks'], batch['max_n_peaks'])
-            x = self.region_embed(x)
-            encodings, _ = self.encoder(x, mask=batch['padding_mask'])
-            context = encodings[:, 0, :]
+        # Apply mask to focus loss on masked regions
+        pred = {
+            'masked': x_masked[loss_mask.squeeze(-1)].reshape(-1, C)
+        }
+        obs = {
+            'masked': x_original[loss_mask.squeeze(-1)].reshape(-1, C)
+        }
+        return pred, obs
+
+    def generate_dummy_data(self):
+        B, R, M = 2, 900, 283
+        return {
+            'region_motif': torch.randn(B, R, M).float().abs(),
+            'mask': torch.randint(0, 2, (B, R)).bool(),
+        }
+
+    @torch.no_grad()
+    def predict(self, batch):
+        """
+        Zero-Shot Inference Step:
+        Reverse diffusion process to generate prediction from pure noise.
+        """
+        self.eval()
+        
+        region_motif = batch['region_motif']
+        mask = batch['mask'].unsqueeze(-1).bool()
+        
+        # Encode
+        x = self.region_embed(region_motif)
+        B, N, C = x.shape
+        
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        mask_token = self.mask_token.expand(B, N, -1)
+        w = mask.type_as(mask_token)
+        x = x * (1 - w) + mask_token * w
+        
+        x = torch.cat((cls_tokens, x), dim=1)
+        encodings, _ = self.encoder(x)
+        encodings = encodings[:, 1:]
+        
+        # Start from pure noise
+        shape = region_motif.shape
+        img = torch.randn(shape, device=encodings.device)
+        
+        for i in reversed(range(0, self.cfg.diffusion.num_timesteps)):
+            t = torch.full((B, 1), i, device=encodings.device, dtype=torch.long)
             
-            # 2. Iterative Denoising (Reverse Process)
-            # Start from pure noise
-            shape = (context.shape[0], self.cfg.output_dim)
-            img = torch.randn(shape, device=context.device)
+            # Predict noise
+            pred_noise = self.diffusion_head(img, t, encodings)
             
-            for i in reversed(range(0, self.num_timesteps)):
-                t = torch.full((context.shape[0], 1), i, device=context.device, dtype=torch.long)
+            # Update step (Simple DDPM)
+            alpha = self.alphas[i]
+            alpha_hat = self.alphas_cumprod[i]
+            beta = self.betas[i]
+            
+            if i > 0:
+                z = torch.randn_like(img)
+            else:
+                z = torch.zeros_like(img)
                 
-                # Predict noise
-                pred_noise = self.diffusion_head(img, t, context)
-                
-                # Step update (Simplified DDPM)
-                alpha = self.alphas[i]
-                alpha_hat = self.alphas_cumprod[i]
-                beta = self.betas[i]
-                
-                if i > 0:
-                    noise = torch.randn_like(img)
-                else:
-                    noise = torch.zeros_like(img)
-                
-                img = (1 / torch.sqrt(alpha)) * (img - ((1 - alpha) / (torch.sqrt(1 - alpha_hat))) * pred_noise) + torch.sqrt(beta) * noise
-                
-            return img
+            term1 = 1 / torch.sqrt(alpha)
+            term2 = (1 - alpha) / (torch.sqrt(1 - alpha_hat))
+            img = term1 * (img - term2 * pred_noise) + torch.sqrt(beta) * z
+            
+        return img
+
