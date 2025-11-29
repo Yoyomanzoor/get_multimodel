@@ -54,15 +54,15 @@ model:
         - spearman
         - r2
 machine:
-  codebase: /home/smanzoor/welch/get_multimodel/
+  codebase: /home/yoyomanzoor/Documents/get_multimodel/
   data_path: /home/xf2217/Projects/get_data/
-  output_dir: /scratch/bioinf593f25_class_root/bioinf593f25_class/shared_data/themanifolds/tutorial_data/output/
+  output_dir: /home/yoyomanzoor/Crucial/get_data/output
   num_devices: 1
   num_workers: 2
   batch_size: 8
   fasta_path: ???
 dataset:
-  zarr_path: /scratch/bioinf593f25_class_root/bioinf593f25_class/shared_data/themanifolds/tutorial_data/annotation_dir/pbmc10k_multiome.zarr
+  zarr_path: /home/yoyomanzoor/Crucial/get_data/annotation_dir/pbmc10k_multiome.zarr
   celltypes: memory_b,cd14_mono,gdt,cd8_tem_1,naive_b,mait,intermediate_b,cd4_naive,cd8_tem_2,cd8_naive,cd4_tem,cd4_tcm,cd16_mono,nk,cdc,treg
   transform: null
   quantitative_atac: false
@@ -73,7 +73,7 @@ dataset:
   mask_ratio: 0.0
 training:
   save_ckpt_freq: 1
-  epochs: 50
+  epochs: 20
   warmup_epochs: 1
   accumulate_grad_batches: 1
   clip_grad: null
