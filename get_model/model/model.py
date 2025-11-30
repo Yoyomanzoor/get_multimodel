@@ -2197,33 +2197,33 @@ class GETRegionDiffusionModel(BaseGETModel):
     """
     Region-based diffusion model for masked motif prediction.
     Similar to GETRegionPretrain but uses diffusion for denoising.
-    
+
     Input: region_motif (B, N, num_motif) - pre-computed motif features per region
     Output: Predicted noise for masked regions
     """
     def __init__(self, cfg: GETRegionDiffusionModelConfig):
         super().__init__(cfg)
-        
+
         # 1. Region Embedding (like GETRegionPretrain)
         self.region_embed = RegionEmbed(cfg.region_embed)
         self.encoder = GETTransformer(**cfg.encoder)
         self.head_mask = nn.Linear(**cfg.head_mask)
-        
+
         # Mask and CLS tokens
-        self.mask_token = nn.Parameter(torch.zeros(1, 1, cfg.mask_token['embed_dim']))
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, cfg.mask_token.embed_dim))
         self.cls_token = nn.Parameter(torch.zeros(1, 1, cfg.embed_dim))
-        trunc_normal_(self.mask_token, std=cfg.mask_token['std'])
-        
+        trunc_normal_(self.mask_token, std=cfg.mask_token.std)
+
         # 2. Diffusion Head for noise prediction
         self.diffusion_head = DiffusionHead(
             cfg.diffusion,
             input_dim=cfg.output_dim,
             condition_dim=cfg.encoder.embed_dim
         )
-        
+
         # 3. Setup diffusion schedule
         self.setup_diffusion_schedule(cfg.diffusion)
-        
+
         self.apply(self._init_weights)
 
     def setup_diffusion_schedule(self, cfg):
@@ -2231,7 +2231,7 @@ class GETRegionDiffusionModel(BaseGETModel):
         betas = torch.linspace(cfg.beta_start, cfg.beta_end, cfg.num_timesteps)
         alphas = 1.0 - betas
         alphas_cumprod = torch.cumprod(alphas, dim=0)
-        
+
         self.register_buffer('betas', betas)
         self.register_buffer('sqrt_alphas_cumprod', torch.sqrt(alphas_cumprod))
         self.register_buffer('sqrt_one_minus_alphas_cumprod', torch.sqrt(1.0 - alphas_cumprod))
@@ -2248,7 +2248,7 @@ class GETRegionDiffusionModel(BaseGETModel):
     def forward(self, region_motif, mask):
         """
         Forward pass with diffusion-based masked prediction.
-        
+
         Args:
             region_motif: (B, N, num_motif) - Input motif features
             mask: (B, N, 1) - Boolean mask for which regions to predict
@@ -2256,51 +2256,51 @@ class GETRegionDiffusionModel(BaseGETModel):
         # 1. Embed regions
         x = self.region_embed(region_motif)
         B, N, C = x.shape
-        
+
         # 2. Apply mask tokens to masked positions
         cls_tokens = self.cls_token.expand(B, -1, -1)
         mask_token = self.mask_token.expand(B, N, -1)
         w = mask.type_as(mask_token)
         x = x * (1 - w) + mask_token * w
-        
+
         # 3. Add CLS token and encode
         x = torch.cat((cls_tokens, x), dim=1)
         encodings, _ = self.encoder(x)
-        
+
         # 4. Get context from CLS token
         context = encodings[:, 0, :]  # (B, embed_dim)
-        
+
         # 5. Get target (masked region motifs)
         # Flatten masked regions: (B, N, num_motif) -> (num_masked, num_motif)
         target = region_motif[mask.squeeze(-1)]  # (num_masked, num_motif)
-        
+
         if target.numel() == 0:
             # No masked regions, return zeros
             return torch.zeros(1, device=region_motif.device), torch.zeros(1, device=region_motif.device), mask
-        
+
         # Expand context to match masked regions
         # Count masked regions per batch
         mask_counts = mask.squeeze(-1).sum(dim=1)  # (B,)
         context_expanded = torch.repeat_interleave(context, mask_counts, dim=0)  # (num_masked, embed_dim)
-        
+
         # 6. Diffusion forward process
         num_masked = target.size(0)
         device = target.device
-        
+
         # Sample timesteps
         t = torch.randint(0, self.num_timesteps, (num_masked, 1), device=device)
-        
+
         # Sample noise
         noise = torch.randn_like(target)
-        
+
         # Add noise to target
         sqrt_alpha = self.sqrt_alphas_cumprod[t]
         sqrt_one_minus_alpha = self.sqrt_one_minus_alphas_cumprod[t]
         noisy_target = sqrt_alpha * target + sqrt_one_minus_alpha * noise
-        
+
         # 7. Predict noise
         predicted_noise = self.diffusion_head(noisy_target, t, context_expanded)
-        
+
         return predicted_noise, noise, mask
 
     def before_loss(self, output, batch):
@@ -2324,52 +2324,52 @@ class GETRegionDiffusionModel(BaseGETModel):
         self.eval()
         region_motif = batch['region_motif']
         mask = batch['mask'].unsqueeze(-1).bool()
-        
+
         # 1. Encode
         x = self.region_embed(region_motif)
         B, N, C = x.shape
-        
+
         cls_tokens = self.cls_token.expand(B, -1, -1)
         mask_token = self.mask_token.expand(B, N, -1)
         w = mask.type_as(mask_token)
         x = x * (1 - w) + mask_token * w
-        
+
         x = torch.cat((cls_tokens, x), dim=1)
         encodings, _ = self.encoder(x)
         context = encodings[:, 0, :]
-        
+
         # 2. Expand context for masked regions
         mask_counts = mask.squeeze(-1).sum(dim=1)
         context_expanded = torch.repeat_interleave(context, mask_counts, dim=0)
-        
+
         num_masked = context_expanded.size(0)
         if num_masked == 0:
             return region_motif
-        
+
         # 3. Reverse diffusion
         shape = (num_masked, self.cfg.output_dim)
         img = torch.randn(shape, device=context.device)
-        
+
         for i in reversed(range(self.num_timesteps)):
             t = torch.full((num_masked, 1), i, device=context.device, dtype=torch.long)
             pred_noise = self.diffusion_head(img, t, context_expanded)
-            
+
             alpha = self.alphas[i]
             alpha_hat = self.alphas_cumprod[i]
             beta = self.betas[i]
-            
+
             if i > 0:
                 z = torch.randn_like(img)
             else:
                 z = torch.zeros_like(img)
-            
+
             term1 = 1 / torch.sqrt(alpha)
             term2 = (1 - alpha) / torch.sqrt(1 - alpha_hat)
             img = term1 * (img - term2 * pred_noise) + torch.sqrt(beta) * z
-        
+
         # 4. Reconstruct full output
         output = region_motif.clone()
         output[mask.squeeze(-1)] = img
-        
+
         return output
 
