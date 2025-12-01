@@ -32,7 +32,6 @@ logs
 multirun
 test/abc
 *.txt
-*pdf
 *png
 *bw
 *tsv
