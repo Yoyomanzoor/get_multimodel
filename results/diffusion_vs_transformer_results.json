@@ -1,0 +1,26 @@
+{
+  "diffusion_model": {
+    "path": "/home/yoyomanzoor/greatlakes/diffusion-best-v1.ckpt",
+    "architecture": "GETRegionDiffusion (DiT-style)",
+    "metrics": {
+      "pearson": "0.79624677",
+      "spearman": 0.5877410986510684,
+      "mse": "0.0012488612",
+      "mae": "0.015524696",
+      "r2": 0.6317107379436493,
+      "n_samples": 36224000
+    }
+  },
+  "transformer_model": {
+    "path": "/home/yoyomanzoor/greatlakes/transformer-best-v1.ckpt",
+    "architecture": "GETRegionPretrain (Standard)",
+    "metrics": {
+      "pearson": "0.7817004",
+      "spearman": 0.3732383042318806,
+      "mse": "0.0023480614",
+      "mae": "0.03057645",
+      "r2": 0.6109274327754974,
+      "n_samples": 1388115
+    }
+  }
+}
