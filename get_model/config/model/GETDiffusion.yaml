@@ -1,0 +1,65 @@
+model:
+  _target_: get_model.model.diffusion.GETRegionDiffusion
+  cfg:
+    # -------------------------------------------------------------------------
+    # Model Architecture (matches GETRegionPretrain)
+    # -------------------------------------------------------------------------
+    num_regions: 900
+    num_motif: 283
+    embed_dim: 768
+    num_layers: 12
+    num_heads: 12
+    dropout: 0.1
+    output_dim: ${model.cfg.num_motif}
+    flash_attn: false
+    pool_method: "mean"
+    
+    # Region Embedding
+    region_embed:
+      num_features: ${model.cfg.num_motif}
+      embed_dim: ${model.cfg.embed_dim}
+    
+    # Encoder config (for compatibility)
+    encoder:
+      num_heads: ${model.cfg.num_heads}
+      embed_dim: ${model.cfg.embed_dim}
+      num_layers: ${model.cfg.num_layers}
+      drop_path_rate: ${model.cfg.dropout}
+      drop_rate: 0
+      attn_drop_rate: 0
+      use_mean_pooling: false
+      flash_attn: ${model.cfg.flash_attn}
+    
+    # Prediction Head
+    head_mask:
+      in_features: ${model.cfg.embed_dim}
+      out_features: ${model.cfg.output_dim}
+    
+    # Mask Token
+    mask_token:
+      embed_dim: ${model.cfg.embed_dim}
+      std: 0.02
+    
+    # -------------------------------------------------------------------------
+    # Diffusion Parameters
+    # -------------------------------------------------------------------------
+    diffusion:
+      num_timesteps: 1000
+      beta_start: 0.0001
+      beta_end: 0.02
+      hidden_dim: 256
+
+    # -------------------------------------------------------------------------
+    # Loss and Metrics (required by BaseGETModel)
+    # -------------------------------------------------------------------------
+    loss:
+      components:
+        masked:
+          _target_: torch.nn.MSELoss
+          reduction: "mean"
+      weights:
+        masked: 1.0
+
+    metrics:
+      components:
+        masked: ["pearson", "mse", "r2"]
