@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
 
+import sys
 import os
+
+codebase_dir = "/home/smanzoor/welch/get_multimodel"
+
+# Add project root to Python path so Hydra can find the model targets
+PROJECT_ROOT = codebase_dir
+if PROJECT_ROOT not in sys.path:
+        sys.path.insert(0, PROJECT_ROOT)
+        os.chdir(PROJECT_ROOT)
+
 from get_model.config.config import export_config, load_config, load_config_from_yaml
 from get_model.run_region import run_zarr as run
-os.chdir('/home/yoyomanzoor/Documents/get_multimodel')
 
-codebase_dir = "/home/yoyomanzoor/Documents/get_multimodel"
-data_path = "/home/yoyomanzoor/Crucial/get_data/annotation_dir/pbmc10k_multiome.zarr"
-output_dir = "/home/yoyomanzoor/Crucial/get_data/output"
-checkpoint_path = "/home/yoyomanzoor/Documents/get_multimodel/tutorials/checkpoint-799.pth"
-run_name = "diffusion_pbmc_from_pretrain_lora"
+project_name = "pretrain_diffusion_testing"
+scratch_dir = "/scratch/bioinf593f25_class_root/bioinf593f25_class/shared_data/themanifolds/tutorial_data"
+data_path = f"{scratch_dir}/annotation_dir/pbmc10k_multiome.zarr"
+checkpoint_path = f"{codebase_dir}/tutorials/checkpoint-799.pth"
+run_name = "pretrain_with_diffusion"
+output_dir = f"{scratch_dir}/{run_name}/output"
 config_path = f"tutorials/yamls/{run_name}.yaml"
 
 # Predefined configuration
@@ -31,7 +41,7 @@ celltype_for_modeling = [
     'cdc',
     'treg']
 cfg = load_config('finetune_tutorial') # load the predefined finetune tutorial config
-cfg.run.project_name = 'pretrain_pbmc' # this is a unique name for this project
+cfg.run.project_name = project_name # this is a unique name for this project
 cfg.training.warmup_epochs = 10
 cfg.dataset.leave_out_celltypes = 'cd8_tem_1'
 cfg.dataset.zarr_path = data_path # the tutorial data which contains astrocyte atac & rna
@@ -42,7 +52,7 @@ cfg.training.epochs = 20 # this is the number of epochs you want to train for
 cfg.training.val_check_interval = 1.0 # validation check every epochs; this is for mac because the evaluation step is slow on it somehow...
 
 # Model selection
-cfg.model = load_config_from_yaml('get_model/config/model/GetRegionDiffusion.yaml').model
+cfg.model = load_config_from_yaml('get_model/config/model/GETRegionDiffusion.yaml').model
 cfg.dataset.mask_ratio = 0.5 # mask 50% of the motifs. This has to be set for pretrain dataloader to generate proper mask
 
 # Train the model without the pretrain checkpoint

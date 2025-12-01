@@ -18,7 +18,7 @@ project_name = "pretrain_diffusion_testing"
 scratch_dir = "/scratch/bioinf593f25_class_root/bioinf593f25_class/shared_data/themanifolds/tutorial_data"
 data_path = f"{scratch_dir}/annotation_dir/pbmc10k_multiome.zarr"
 checkpoint_path = f"{codebase_dir}/tutorials/checkpoint-799.pth"
-run_name = "pretrain_without_diffusion"
+run_name = "pretrain_with_diffusion-transfomer"
 output_dir = f"{scratch_dir}/{run_name}/output"
 config_path = f"tutorials/yamls/{run_name}.yaml"
 
@@ -52,7 +52,7 @@ cfg.training.epochs = 20 # this is the number of epochs you want to train for
 cfg.training.val_check_interval = 1.0 # validation check every epochs; this is for mac because the evaluation step is slow on it somehow...
 
 # Model selection
-cfg.model = load_config('model/GETRegionPretrain').model.model
+cfg.model = load_config_from_yaml('get_model/config/model/GETDiffusion.yaml').model
 cfg.dataset.mask_ratio = 0.5 # mask 50% of the motifs. This has to be set for pretrain dataloader to generate proper mask
 
 # Train the model without the pretrain checkpoint

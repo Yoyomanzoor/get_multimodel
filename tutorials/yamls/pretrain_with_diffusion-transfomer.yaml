@@ -1,0 +1,121 @@
+run:
+  project_name: pretrain_diffusion_testing
+  run_name: pretrain_with_diffusion-transfomer
+  use_wandb: true
+type: region
+stage: fit
+assembly: hg38
+eval_tss: true
+log_image: true
+model:
+  _target_: get_model.model.diffusion.GETRegionDiffusion
+  cfg:
+    num_regions: 900
+    num_motif: 283
+    embed_dim: 768
+    num_layers: 12
+    num_heads: 12
+    dropout: 0.1
+    output_dim: ${model.cfg.num_motif}
+    flash_attn: false
+    pool_method: mean
+    region_embed:
+      num_features: ${model.cfg.num_motif}
+      embed_dim: ${model.cfg.embed_dim}
+    encoder:
+      num_heads: ${model.cfg.num_heads}
+      embed_dim: ${model.cfg.embed_dim}
+      num_layers: ${model.cfg.num_layers}
+      drop_path_rate: ${model.cfg.dropout}
+      drop_rate: 0
+      attn_drop_rate: 0
+      use_mean_pooling: false
+      flash_attn: ${model.cfg.flash_attn}
+    head_mask:
+      in_features: ${model.cfg.embed_dim}
+      out_features: ${model.cfg.output_dim}
+    mask_token:
+      embed_dim: ${model.cfg.embed_dim}
+      std: 0.02
+    diffusion:
+      num_timesteps: 1000
+      beta_start: 0.0001
+      beta_end: 0.02
+      hidden_dim: 256
+    loss:
+      components:
+        masked:
+          _target_: torch.nn.MSELoss
+          reduction: mean
+      weights:
+        masked: 1.0
+    metrics:
+      components:
+        masked:
+        - pearson
+        - mse
+        - r2
+machine:
+  codebase: /home/smanzoor/welch/get_multimodel
+  data_path: /home/xf2217/Projects/get_data/
+  output_dir: /scratch/bioinf593f25_class_root/bioinf593f25_class/shared_data/themanifolds/tutorial_data/pretrain_with_diffusion-transfomer/output
+  num_devices: 1
+  num_workers: 2
+  batch_size: 8
+  fasta_path: ???
+dataset:
+  zarr_path: /scratch/bioinf593f25_class_root/bioinf593f25_class/shared_data/themanifolds/tutorial_data/annotation_dir/pbmc10k_multiome.zarr
+  celltypes: memory_b,cd14_mono,gdt,cd8_tem_1,naive_b,mait,intermediate_b,cd4_naive,cd8_tem_2,cd8_naive,cd4_tem,cd4_tcm,cd16_mono,nk,cdc,treg
+  transform: null
+  quantitative_atac: false
+  sampling_step: 100
+  num_region_per_sample: 200
+  leave_out_chromosomes: null
+  leave_out_celltypes: cd8_tem_1
+  mask_ratio: 0.5
+training:
+  save_ckpt_freq: 1
+  epochs: 20
+  warmup_epochs: 10
+  accumulate_grad_batches: 1
+  clip_grad: null
+  use_fp16: false
+  log_every_n_steps: 25
+  val_check_interval: 1.0
+  add_lr_monitor: false
+  save_every_n_epochs: null
+optimizer:
+  lr: 0.0001
+  min_lr: 0.0001
+  weight_decay: 0.05
+  opt: adamw
+  opt_eps: 1.0e-08
+  opt_betas:
+  - 0.9
+  - 0.999
+finetune:
+  resume_ckpt: null
+  pretrain_checkpoint: false
+  checkpoint: /home/smanzoor/welch/get_multimodel/tutorials/checkpoint-799.pth
+  strict: false
+  model_key: model
+  use_lora: false
+  lora_checkpoint: null
+  rename_config:
+    encoder.head.: head_mask.
+    encoder.region_embed: region_embed
+    region_embed.proj.: region_embed.embed.
+    encoder.cls_token: cls_token
+  layers_with_lora:
+  - region_embed
+  - encoder
+  - head_exp
+  patterns_to_freeze: []
+  patterns_to_drop: []
+  additional_checkpoints: []
+task:
+  test_mode: interpret
+  gene_list: MYC,SOX10,SOX2,RET
+  layer_names:
+  - region_embed
+  mutations: null
